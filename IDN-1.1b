@@ -1,0 +1,96 @@
+# IDN Version 1.1b / Wed Jun 13 17:25:59 UTC 2007 / Marc Sebastian Pelzer
+#
+# this plugin checks if the domain part of a sender or recipient contains utf-8 chars and converts it into ACE using Puyncode.
+# See http://en.wikipedia.org/wiki/Internationalized_domain_name
+#
+# This is a Beta Testversion! It has not intensively been tested yet, but works well in my environment. Please feel free to play
+# around with it. To install the module, put a copy of this code into a file called "plugins/IDN" and add a line that says "IDN"
+# into your "config/plugins" file - somewhere at the top of the file.
+#
+# All outgoing emails will be checked if the recipient domain-part contains non plain 7bit ASCII charcters and will be converted
+# into ACE using punycode. The Perl module IDNA::Punycode is required to run this plug-in. Get it via "perl -MCPAN -e shell".
+#
+# Right now, this plug-in always returns DECLINED because recipient->host and sender->host are always empty
+# when a email address with IDN arrives into qpsmtpd. A simple patch is needed for Qpsmtpd::Address canonify(), like
+# replacing this line:
+#
+#  my $subdomain = '(?:[a-zA-Z0-9](?:[-a-zA-Z0-9]*[a-zA-Z0-9])?)';
+#
+# with this line:
+#
+#  my $subdomain = '([^\.]{2,})?';
+#
+# Also, the method Qpsmtpd::Address host() need to be patched in order to allow overwriting of the host:
+#
+# sub host {
+#    my ($self, $host) = @_;
+#    if ($host) { $self->{_host} = $host; } else { return $self->{_host}; }
+# }
+#
+# To apply this two modifications, simply edit lib/Qpsmtpd/Address.pm and search for the lines, comment them out and replace them with the new ones.
+#
+use Qpsmtpd::DSN;
+use IDNA::Punycode;
+use Encode;
+
+sub hook_rcpt {
+
+    my ($self, $transaction, $recipient) = @_;
+    my ($domainpart, @labels, $label, $converted_domainpart);
+
+    return (DECLINED) unless $recipient->host;
+
+    # check if the RCPT domain part contains utf-8 characters and convert them to ACE (punycode)
+    #
+    $domainpart = $recipient->host;
+
+    if ($domainpart =~ m!^[a-zA-Z0-9\-\.]+$! || $domainpart =~ m!xn--!) { return (DECLINED); }      # nothing to do for us
+
+    @labels = split('\.', $domainpart);
+
+    foreach $label (@labels) {
+
+        unless (Encode::is_utf8($label)) { $label = decode("utf-8", $label); }
+
+        $converted_domainpart .= encode_punycode($label) . ".";
+    }
+
+    chop($converted_domainpart);    # remove last dot
+
+    $recipient->host($converted_domainpart);    # overwrite the Qpsmtpd::Address object element
+
+    $self->log(LOGNOTICE, "Found utf-8 domainpart, which has been converted to ACE using Punycode. New recipient is '" . $recipient->user . '@' . $recipient->host . "'");
+
+    return (DECLINED);
+}
+
+sub hook_mail {
+
+    my ($self, $transaction, $sender) = @_;
+    my ($domainpart, @labels, $label, $converted_domainpart);
+
+    return (DECLINED) unless $sender->host;
+
+    # check if the RCPT domain part contains utf-8 characters and convert them to ACE (punycode)
+    #
+    $domainpart = $sender->host;
+
+    if ($domainpart =~ m!^[a-zA-Z0-9\-\.]+$! || $domainpart =~ m!xn--!) { return (DECLINED); }      # nothing to do for us
+
+    @labels = split('\.', $domainpart);
+
+    foreach $label (@labels) {
+
+        unless (Encode::is_utf8($label)) { $label = decode("utf-8", $label); }
+
+        $converted_domainpart .= encode_punycode($label) . ".";
+    }
+
+    chop($converted_domainpart);    # remove last dot
+
+    $sender->host($converted_domainpart);   # overwrite the Qpsmtpd::Address object element
+
+    $self->log(LOGNOTICE, "Found utf-8 domainpart, which has been converted to ACE using Punycode. New sender is '" . $sender->user . '@' . $sender->host . "'");
+
+    return (DECLINED);
+}
